@@ -7,6 +7,7 @@ const logger = Logger.create("replicator", { color: Logger.Colors.Cyan })
 Logger.setLogLevel('ERROR')
 
 const getNext = e => e.next
+const getRefs = e => e.refs
 const flatMap = (res, val) => res.concat(val)
 const notNull = entry => entry !== null && entry !== undefined
 const uniqueValues = (res, val) => {
@@ -163,7 +164,8 @@ class Replicator extends EventEmitter {
     const log = await Log.fromEntryHash(this._store._ipfs, hash, this._store._oplog.id, batchSize, exclude, this._store.key, this._store.access.write)
     this._buffer.push(log)
 
-    const latest = log.values[0]
+    const values = await log.values()
+    const latest = values[0]
     delete this._queue[hash]
 
     // Mark this task as processed
@@ -173,7 +175,10 @@ class Replicator extends EventEmitter {
     this.emit('load.progress', this._id, hash, latest, null, this._buffer.length)
 
     // Return all next pointers
-    return log.values.map(getNext).reduce(flatMap, [])
+    const refs = log.heads.map(getRefs).reduce(flatMap, [])
+    const nexts = Array.from(log._nextsIndex.values()).filter(e => e !== undefined)
+    return nexts.concat(refs)
+
   }
 }
 
