@@ -18,7 +18,7 @@ const DefaultOptions = {
   maxHistory: -1,
   directory: './orbitdb',
   replicate: true,
-  referenceCount: 64,
+  referenceCount: 32,
   replicationConcurrency: 128
 }
 
