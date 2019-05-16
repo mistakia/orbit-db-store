@@ -27,6 +27,8 @@ const DefaultOptions = {
   sortFn: undefined
 }
 
+const CACHE_VERSION = 0
+
 class Store {
   constructor (ipfs, identity, address, options) {
     if (!identity) {
@@ -48,6 +50,7 @@ class Store {
     this.dbname = address.path || ''
     this.events = new EventEmitter()
 
+    this.hashIndexPath = path.join(this.id, `_hashIndex:${CACHE_VERSION}`)
     this.remoteHeadsPath = path.join(this.id, '_remoteHeads')
     this.localHeadsPath = path.join(this.id, '_localHeads')
     this.snapshotPath = path.join(this.id, 'snapshot')
@@ -68,7 +71,11 @@ class Store {
     this._oplog = new Log(this._ipfs, this.identity, { logId: this.id, access: this.access, sortFn: this.options.sortFn })
 
     // Create the index
-    this._index = new this.options.Index(this.address.root)
+    this._index = new this.options.Index(this._cache)
+
+    // Manage async operations
+    this._operations = []
+    this._operationPending = false
 
     // Replication progress info
     this._replicationStatus = new ReplicationInfo()
@@ -118,7 +125,7 @@ class Store {
           const heads = this._oplog.heads
           await this._cache.set(this.remoteHeadsPath, heads)
           logger.debug(`Saved heads ${heads.length} [${heads.map(e => e.hash).join(', ')}]`)
-
+          await this._cache.set(this.hashIndexPath, Array.from(this._oplog._hashIndex.entries()))
           // logger.debug(`<replicated>`)
           this.events.emit('replicated', this.address.toString(), logs.length)
         } catch (e) {
@@ -221,6 +228,46 @@ class Store {
     this._cache = this.options.cache
   }
 
+  async _load (heads, amount, fetchEntryTimeout) {
+    // load using hashIndex
+    const hashIndex = new Map(await this._cache.get(this.hashIndexPath) || null)
+    if (hashIndex.size) {
+      this._oplog = new Log(
+        this._ipfs,
+        this.identity,
+        {
+          logId: this.id,
+          access: this.access,
+          heads,
+          hashIndex
+        }
+      )
+      return
+    }
+
+    // load from disk
+    await mapSeries(heads, async (head) => {
+      this._recalculateReplicationMax(head.clock.time)
+      let log = await Log.fromEntryHash(
+        this._ipfs,
+        this.identity,
+        head.hash,
+        {
+          access: this.access,
+          logId: this._oplog.id,
+          localResolve: true,
+          sortFn: this.options.sortFn,
+          length: amount,
+          onProgressCallback: this._onLoadProgress.bind(this),
+          timeout: fetchEntryTimeout
+        }
+      )
+      await this._oplog.join(log)
+    })
+
+    return this._cache.set(this.hashIndexPath, Array.from(this._oplog._hashIndex.entries()))
+  }
+
   async load (amount, { fetchEntryTimeout } = {}) {
     amount = amount || this.options.maxHistory
     fetchEntryTimeout = fetchEntryTimeout || this.options.fetchEntryTimeout
@@ -228,33 +275,15 @@ class Store {
     if (this.options.onLoad) {
       await this.options.onLoad(this)
     }
+
     const localHeads = await this._cache.get(this.localHeadsPath) || []
     const remoteHeads = await this._cache.get(this.remoteHeadsPath) || []
     const heads = localHeads.concat(remoteHeads)
 
     if (heads.length > 0) {
       this.events.emit('load', this.address.toString(), heads)
-    }
-
-    // Update the replication status from the heads
-    heads.forEach(h => this._recalculateReplicationMax(h.clock.time))
-
-    // Load the log
-    const log = await Log.fromEntryHash(this._ipfs, this.identity, heads.map(e => e.hash), {
-      logId: this._oplog.id,
-      access: this.access,
-      sortFn: this.options.sortFn,
-      length: amount,
-      exclude: this._oplog.values,
-      onProgressCallback: this._onLoadProgress.bind(this),
-      timeout: fetchEntryTimeout
-    })
-
-    // Join the log with the existing log
-    await this._oplog.join(log, amount)
-
-    // Update the index
-    if (heads.length > 0) {
+      await this._load(heads, amount, fetchEntryTimeout)
+      await this._index.loadIndex()
       await this._updateIndex()
     }
 
@@ -300,20 +329,13 @@ class Store {
       return head
     }
 
-    const saved = await mapSeries(heads, saveToIpfs)
-    await this._replicator.load(saved.filter(e => e !== null))
-
-    if (this._replicator._buffer.length || Object.values(this._replicator._queue).length) {
-      return new Promise(resolve => {
-        const progressHandler = (address, hash, entry, progress, have) => {
-          if (progress === have) {
-            this.events.off('replicate.progress', progressHandler)
-            this.events.once('replicated', resolve)
-          }
-        }
-        this.events.on('replicate.progress', progressHandler)
+    return mapSeries(heads, saveToIpfs)
+      .then(async (saved) => {
+        const entries = saved.filter(e => e !== null)
+        const nexts = Object.keys(this._oplog._nextsIndex)
+        const notInHashIndex = nexts.filter((n) => !this._oplog._hashIndex.has(n))
+        return this._replicator.load(entries.concat(notInHashIndex))
       })
-    }
   }
 
   loadMoreFrom (amount, entries) {
@@ -500,6 +522,34 @@ class Store {
   }
 
   async _addOperation (data, { onProgressCallback, pin = false } = {}) {
+    return new Promise((resolve, reject) => {
+      const run = async () => {
+        this._operationPending = true
+        try {
+          const res = await this._runOperation(data, pin)
+          resolve(res)
+          this._nextOperation()
+        } catch (err) {
+          reject(err)
+          this._nextOperation()
+        }
+      }
+
+      if (!this._operationPending) {
+        run()
+      } else {
+        this._operations.push(run.bind(this))
+      }
+    })
+  }
+
+  _nextOperation () {
+    this._operationPending = false
+    const run = this._operations.shift()
+    if (run) run()
+  }
+
+  async _runOperation (data, batchOperation, lastOperation, onProgressCallback, pin) {
     if (this._oplog) {
       // check local cache?
       if (this.options.syncLocal) {

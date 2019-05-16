@@ -22,10 +22,10 @@
   "author": "Haad",
   "license": "MIT",
   "dependencies": {
-    "ipfs-log": "~4.5.0",
+    "ipfs-log": "github:mistakia/ipfs-log#proto/read-from-disk",
     "it-to-stream": "^0.1.1",
     "logplease": "^1.2.14",
-    "orbit-db-io": "~0.2.0",
+    "orbit-db-io": "github:mistakia/orbit-db-io#feat/localResolve",
     "p-each-series": "^1.0.0",
     "p-map": "^3.0.0",
     "readable-stream": "~2.3.5"
