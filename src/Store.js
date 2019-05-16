@@ -59,6 +59,10 @@ class Store {
     // Create the index
     this._index = new this.options.Index(this.identity.publicKey)
 
+    // Manage async operations
+    this._operations = []
+    this._operationPending = false
+
     // Replication progress info
     this._replicationStatus = new ReplicationInfo()
 
@@ -197,26 +201,50 @@ class Store {
     this._cache = this.options.cache
   }
 
-  async load (amount) {
-    amount = amount || this.options.maxHistory
+  async _load (heads) {
+    // load using hashIndex
+    const hashIndex = new Map(await this._cache.get('_hashIndex') || null)
+    if (hashIndex.size) {
+      let log = new Log(
+        this._ipfs,
+        this.identity,
+        {
+          logId: this.id,
+          access: this.access,
+          heads,
+          hashIndex
+        }
+      )
+      return this._oplog.join(log)
+    }
 
+    // load from disk
+    return mapSeries(heads, async (head) => {
+      this._recalculateReplicationMax(head.clock.time)
+      const values = await this._oplog.values()
+      let log = await Log.fromEntryHash(
+        this._ipfs,
+        this.identity,
+        head.hash,
+        {
+          access: this.access,
+          logId: this._oplog.id,
+          onProgressCallback: this._onLoadProgress.bind(this)
+        }
+      )
+      await this._oplog.join(log)
+      await this._cache.set('_hashIndex', Array.from(this._oplog._hashIndex.entries()))
+    })
+  }
 
+  async load () {
     const localHeads = await this._cache.get('_localHeads') || []
     const remoteHeads = await this._cache.get('_remoteHeads') || []
     const heads = localHeads.concat(remoteHeads)
 
     if (heads.length > 0) {
       this.events.emit('load', this.address.toString(), heads)
-    }
-
-    await mapSeries(heads, async (head) => {
-      this._recalculateReplicationMax(head.clock.time)
-      let log = await Log.fromEntryHash(this._ipfs, this.identity, head.hash, { logId: this._oplog.id, access: this.access, length: amount, exclude: this._oplog.values, onProgressCallback:  this._onLoadProgress.bind(this) })
-      await this._oplog.join(log, amount)
-    })
-
-    // Update the index
-    if (heads.length > 0) {
+      await this._load(heads)
       await this._updateIndex()
     }
 
@@ -417,7 +445,35 @@ class Store {
     this._recalculateReplicationProgress()
   }
 
-  async _addOperation (data, batchOperation, lastOperation, onProgressCallback) {
+  _addOperation (data) {
+    return new Promise((resolve, reject) => {
+      const run = async () => {
+        this._operationPending = true
+        try {
+          const res = await this._runOperation(data)
+          resolve(res)
+          this._nextOperation()
+        } catch (err) {
+          reject(err)
+          this._nextOperation()
+        }
+      }
+
+      if (!this._operationPending) {
+        run()
+      } else {
+        this._operations.push(run.bind(this))
+      }
+    })
+  }
+
+  _nextOperation () {
+    this._operationPending = false
+    const run = this._operations.shift()
+    if (run) run()
+  }
+
+  async _runOperation (data, batchOperation, lastOperation, onProgressCallback) {
     if (this._oplog) {
       const entry = await this._oplog.append(data, this.options.referenceCount)
       this._recalculateReplicationStatus(this.replicationStatus.progress + 1, entry.clock.time)

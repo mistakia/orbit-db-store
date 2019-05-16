@@ -164,7 +164,8 @@ class Replicator extends EventEmitter {
     const log = await Log.fromEntryHash(this._store._ipfs, this._store.identity, hash, { logId: this._store._oplog.id, access: this._store.access, length: batchSize, exclude })
     this._buffer.push(log)
 
-    const latest = log.values[0]
+    const values = await log.values()
+    const latest = values[0]
     delete this._queue[hash]
 
     // Mark this task as processed
@@ -174,7 +175,7 @@ class Replicator extends EventEmitter {
     this.emit('load.progress', this._id, hash, latest, null, this._buffer.length)
 
     // Return all next pointers
-    return log.values.map(getNext).reduce(flatMap, [])
+    return values.map(getNext).reduce(flatMap, [])
   }
 }
 
