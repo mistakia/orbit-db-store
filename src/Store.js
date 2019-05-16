@@ -43,6 +43,12 @@ class Store {
     this.dbname = address.path || ''
     this.events = new EventEmitter()
 
+    this.remoteHeadsPath = address + "/_remoteHeads"
+    this.localHeadsPath = address + "/_localHeads"
+    this.snapshotPath = address + "/snapshot"
+    this.queuePath = address + "/queue"
+    this.manifestPath = address + "/_manifest"
+
     // External dependencies
     this._ipfs = ipfs
     this._cache = options.cache
@@ -105,7 +111,7 @@ class Store {
 
           // only store heads that has been verified and merges
           const heads = this._oplog.heads
-          await this._cache.set('_remoteHeads', heads)
+          await this._cache.set(this.remoteHeadsPath, heads)
           logger.debug(`Saved heads ${heads.length} [${heads.map(e => e.hash).join(', ')}]`)
 
           // logger.debug(`<replicated>`)
@@ -190,7 +196,13 @@ class Store {
    */
   async drop () {
     await this.close()
-    await this._cache.destroy()
+
+    await this._cache.del(this.localHeadsPath)
+    await this._cache.del(this.remoteHeadsPath)
+    await this._cache.del(this.snapshotPath)
+    await this._cache.del(this.queuePath)
+    await this._cache.del(this.manifestPath)
+
     // Reset
     this._index = new this.options.Index(this.identity.publicKey)
     this._oplog = new Log(this._ipfs, this.identity, { logId: this.id, access: this.access })
@@ -201,8 +213,8 @@ class Store {
     amount = amount || this.options.maxHistory
 
 
-    const localHeads = await this._cache.get('_localHeads') || []
-    const remoteHeads = await this._cache.get('_remoteHeads') || []
+    const localHeads = await this._cache.get(this.localHeadsPath) || []
+    const remoteHeads = await this._cache.get(this.remoteHeadsPath) || []
     const heads = localHeads.concat(remoteHeads)
 
     if (heads.length > 0) {
@@ -302,8 +314,8 @@ class Store {
 
     const snapshot = this._ipfs.files.add ? await this._ipfs.files.add(rs) : await this._ipfs.add(rs)
 
-    await this._cache.set('snapshot', snapshot[snapshot.length - 1])
-    await this._cache.set('queue', unfinished)
+    await this._cache.set(this.snapshotPath, snapshot[snapshot.length - 1])
+    await this._cache.set(this.queuePath, unfinished)
 
     logger.debug(`Saved snapshot: ${snapshot[snapshot.length - 1].hash}, queue length: ${unfinished.length}`)
 
@@ -318,7 +330,7 @@ class Store {
     const queue = await this._cache.get('queue')
     this.sync(queue || [])
 
-    const snapshot = await this._cache.get('snapshot')
+    const snapshot = await this._cache.get(this.snapshotPath)
 
     if (snapshot) {
       const res = this._ipfs.files.catReadableStream ? await this._ipfs.files.catReadableStream(snapshot.hash) : await this._ipfs.catReadableStream(snapshot.hash)
@@ -421,7 +433,7 @@ class Store {
     if (this._oplog) {
       const entry = await this._oplog.append(data, this.options.referenceCount)
       this._recalculateReplicationStatus(this.replicationStatus.progress + 1, entry.clock.time)
-      await this._cache.set('_localHeads', [entry])
+      await this._cache.set(this.localHeadsPath, [entry])
       await this._updateIndex()
       this.events.emit('write', this.address.toString(), entry, this._oplog.heads)
       if (onProgressCallback) onProgressCallback(entry)
