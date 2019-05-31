@@ -327,7 +327,7 @@ class Store {
 
     const maxClock = (res, val) => Math.max(res, val.clock.time)
 
-    const queue = await this._cache.get('queue')
+    const queue = await this._cache.get(this.queuePath)
     this.sync(queue || [])
 
     const snapshot = await this._cache.get(this.snapshotPath)
