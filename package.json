@@ -19,7 +19,7 @@
   "dependencies": {
     "ipfs-log": "orbitdb/ipfs-log#fix/append-performance",
     "logplease": "^1.2.14",
-    "orbit-db-io": "orbitdb/orbit-db-io#feat/ipfs-0.36.x",
+    "orbit-db-io": "0.1.0",
     "p-each-series": "^1.0.0",
     "readable-stream": "~2.3.5"
   },
