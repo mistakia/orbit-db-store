@@ -1,6 +1,6 @@
 {
   "name": "orbit-db-store",
-  "version": "2.6.1",
+  "version": "2.6.2",
   "description": "Base class for orbit-db data stores",
   "main": "src/Store.js",
   "scripts": {
@@ -19,7 +19,7 @@
   "dependencies": {
     "ipfs-log": "orbitdb/ipfs-log#fix/append-performance",
     "logplease": "^1.2.14",
-    "orbit-db-io": "0.1.0",
+    "orbit-db-io": "~0.1.0",
     "p-each-series": "^1.0.0",
     "readable-stream": "~2.3.5"
   },
