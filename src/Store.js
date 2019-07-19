@@ -68,7 +68,7 @@ class Store {
     this._oplog = new Log(this._ipfs, this.identity, { logId: this.id, access: this.access, sortFn: this.options.sortFn })
 
     // Create the index
-    this._index = new this.options.Index(this.address.root)
+    this._index = new this.options.Index(this.address.root, this._cache)
 
     // Replication progress info
     this._replicationStatus = new ReplicationInfo()
