@@ -110,13 +110,27 @@ class Replicator extends EventEmitter {
     }
   }
 
+  resume () {
+    this._stopped = false
+    if (!this._flushTimer) {
+      this._flushTimer = setInterval(() => {
+        if (this.tasksRunning === 0 && Object.keys(this._queue).length > 0) {
+          logger.warn('Had to flush the queue!', Object.keys(this._queue).length, 'items in the queue, ', this.tasksRequested, this.tasksFinished, ' tasks requested/finished')
+          setTimeout(() => this._processQueue(), 0)
+        }
+      }, 3000)
+    }
+  }
+
   stop () {
     // Clears the queue flusher
+    this._stopped = true
     clearInterval(this._flushTimer)
     // Remove event listeners
     this.removeAllListeners('load.added')
     this.removeAllListeners('load.end')
     this.removeAllListeners('load.progress')
+    this._flushTimer = null
   }
 
   _addToQueue (entry) {
@@ -126,6 +140,10 @@ class Replicator extends EventEmitter {
   }
 
   async _processQueue () {
+    if (this._stopped) {
+      return
+    }
+
     if (this.tasksRunning < this._concurrency) {
       const capacity = this._concurrency - this.tasksRunning
       const items = Object.values(this._queue).slice(0, capacity).filter(notNull)
