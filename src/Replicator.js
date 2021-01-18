@@ -6,7 +6,7 @@ const Logger = require('logplease')
 const logger = Logger.create('replicator', { color: Logger.Colors.Cyan })
 Logger.setLogLevel('ERROR')
 
-const getNext = e => e.next
+const getLinks = e => e.refs.concat(e.next)
 const flatMap = (res, val) => res.concat(val)
 const notNull = entry => entry !== null && entry !== undefined
 const uniqueValues = (res, val) => {
@@ -110,9 +110,28 @@ class Replicator extends EventEmitter {
     }
   }
 
-  stop () {
+  resume () {
+    this._stopped = false
+    if (!this._flushTimer) {
+      this._flushTimer = setInterval(() => {
+        if (this.tasksRunning === 0 && Object.keys(this._queue).length > 0) {
+          logger.warn('Had to flush the queue!', Object.keys(this._queue).length, 'items in the queue, ', this.tasksRequested, this.tasksFinished, ' tasks requested/finished')
+          setTimeout(() => this._processQueue(), 0)
+        }
+      }, 3000)
+    }
+  }
+
+  pause () {
     // Clears the queue flusher
+    this._queue = {}
+    this._stopped = true
     clearInterval(this._flushTimer)
+    this._flushTimer = null
+  }
+
+  stop () {
+    this.pause()
     // Remove event listeners
     this.removeAllListeners('load.added')
     this.removeAllListeners('load.end')
@@ -121,11 +140,16 @@ class Replicator extends EventEmitter {
 
   _addToQueue (entry) {
     const hash = entry.hash || entry
+    logger.debug(`added to queue - ${hash}`)
     this._stats.tasksRequested += 1
     this._queue[hash] = entry
   }
 
   async _processQueue () {
+    if (this._stopped) {
+      return
+    }
+
     if (this.tasksRunning < this._concurrency) {
       const capacity = this._concurrency - this.tasksRunning
       const items = Object.values(this._queue).slice(0, capacity).filter(notNull)
@@ -156,6 +180,8 @@ class Replicator extends EventEmitter {
   async _processOne (entry) {
     const hash = entry.hash || entry
 
+    logger.debug(`fetching - ${hash}`)
+
     if (this._store._oplog.has(hash) || this._fetching[hash]) {
       return
     }
@@ -169,7 +195,7 @@ class Replicator extends EventEmitter {
     const log = await Log.fromEntryHash(this._store._ipfs, this._store.identity, hash, { logId: this._store._oplog.id, access: this._store.access, length: batchSize, exclude })
     this._buffer.push(log)
 
-    const latest = log.values[0]
+    const latest = log.heads[0]
     delete this._queue[hash]
     // console.log('>>', latest.payload)
 
@@ -180,7 +206,7 @@ class Replicator extends EventEmitter {
     this.emit('load.progress', this._id, hash, latest, null, this._buffer.length)
 
     // Return all next pointers
-    return log.values.map(getNext).reduce(flatMap, [])
+    return log.heads.map(getLinks).reduce(flatMap, [])
   }
 }
 
